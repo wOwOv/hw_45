@@ -9,17 +9,14 @@
 
 
 #define SERVERPORT 9000
-#define BUFSIZE 512
+
 struct SOCKETINFO;
-long check;
-long pending;//0이면 동기 1이면 비동기
-long recvcount;
+
 
 struct myOverlapped
 {
 	WSAOVERLAPPED overlapped;
 	bool type;				//0이면 recv 1이면 send
-	SOCKETINFO* socketinfo;
 
 };
 
@@ -32,6 +29,7 @@ struct SOCKETINFO
 	RingBuffer RecvQ;
 	RingBuffer SendQ;
 	SOCKET sock;
+	long sendflag;
 };
 
 
@@ -99,13 +97,13 @@ int main(int argc, char* argv[])
 		err_quit((char*)"bind()");
 	}
 
-	////SO_SNDBUF
-	//int optval = 0;
-	//retval = setsockopt(listen_sock, SOL_SOCKET, SO_SNDBUF, (char*)&optval, sizeof(optval));
-	//if (retval == SOCKET_ERROR)
-	//{
-	//	err_quit((char*)"SNDBUF()");
-	//}
+	//SO_SNDBUF
+	int optval = 0;
+	retval = setsockopt(listen_sock, SOL_SOCKET, SO_SNDBUF, (char*)&optval, sizeof(optval));
+	if (retval == SOCKET_ERROR)
+	{
+		err_quit((char*)"SNDBUF()");
+	}
 
 	//listen()
 	retval = listen(listen_sock, SOMAXCONN);
@@ -143,8 +141,6 @@ int main(int argc, char* argv[])
 		ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
 		ptr->sendio.type = 1;
 		ptr->recvio.type = 0;
-		ptr->sendio.socketinfo = ptr;
-		ptr->recvio.socketinfo = ptr;
 		ptr->sock = client_sock;
 
 
@@ -157,8 +153,7 @@ int main(int argc, char* argv[])
 		wsabuf.len = ptr->RecvQ.DirectEnqueueSize();
 		flags = 0;
 		
-		InterlockedIncrement(&recvcount);
-		ProfileBegin("WSARecv");
+
 		retval = WSARecv(ptr->sock, &wsabuf, 1, &recvbytes, &flags, &ptr->recvio.overlapped, NULL);
 		if (retval == SOCKET_ERROR)
 		{
@@ -168,19 +163,9 @@ int main(int argc, char* argv[])
 			}
 			else
 			{
-				//printf("[MAIN] WSARecv - retval : WSA_IO_PENDING, recvbytes : %d\n", recvbytes);
-				InterlockedExchange(&pending, 1);
+				printf("[MAIN] WSARecv - retval : WSA_IO_PENDING, recvbytes : %d\n", recvbytes);
 			}
 		}
-		else
-		{
-
-
-
-			ProfileEndS("WSARecv");
-			InterlockedExchange(&pending, 0);
-		}
-
 	}
 
 
@@ -202,11 +187,9 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 	{
 		//비동기 입출력 완료 기다리기
 		DWORD cbTransferred;
-		SOCKET client_sock;
 		myOverlapped* myoverlapped;
 		SOCKETINFO* ptr;
-		retval = GetQueuedCompletionStatus(hcp, &cbTransferred, &client_sock, (LPOVERLAPPED*)&myoverlapped, INFINITE);
-		ptr = myoverlapped->socketinfo;
+		retval = GetQueuedCompletionStatus(hcp, &cbTransferred, (PULONG_PTR)& ptr, (LPOVERLAPPED*)&myoverlapped, INFINITE);
 
 		//클라이언트 정보 얻기
 		SOCKADDR_IN clientaddr;
@@ -231,17 +214,13 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 		//recvio overlapped임
 		if (myoverlapped->type == 0)
 		{
-			if (InterlockedExchange(&pending,2))
-			{
-				ProfileEndA("WSARecv");
-			}
 
 			ptr->RecvQ.MoveRear(cbTransferred);
 			char* recvtemp = new char[cbTransferred + 1];
 			//받은 데이터 출력
 			int deqret = ptr->RecvQ.Dequeue(recvtemp, cbTransferred);
 			recvtemp[cbTransferred] = '\0';
-			//printf("[TCP/%s:%d <<%s>>\n\ntransferred: %d\n", inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), recvtemp,cbTransferred);
+			printf("[TCP/%s:%d <<%s>>\n\ntransferred: %d\n", inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), recvtemp,cbTransferred);
 
 			//받은 것 SendQ로 옮기기
 			int enqret = ptr->SendQ.Enqueue(recvtemp, cbTransferred);
@@ -252,9 +231,8 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 			delete[] recvtemp;
 
 			//WSASend걸기
-			if (ptr->SendQ.GetUsedSize() > 0 && InterlockedExchange(&check, 1) == 0)
+			if (ptr->SendQ.GetUsedSize() > 0 && InterlockedExchange(&ptr->sendflag, 1) == 0)
 			{
-				//int temp = InterlockedExchange(&check, 1);
 				if (ptr->SendQ.GetUsedSize() == ptr->SendQ.DirectDequeueSize())
 				{
 					WSABUF wsabuf;
@@ -263,7 +241,6 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 					wsabuf.buf = ptr->SendQ.GetFrontBufferPtr();
 					wsabuf.len = ptr->SendQ.DirectDequeueSize();
 					ZeroMemory(&ptr->sendio.overlapped, sizeof(ptr->sendio.overlapped));
-					ProfileBegin("WSASend");
 					retval = WSASend(ptr->sock, &wsabuf, 1, &sendbytes, sendflags, &ptr->sendio.overlapped, NULL);
 					if (retval == SOCKET_ERROR)
 					{
@@ -272,15 +249,7 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 							err_display((char*)"WSASend()");
 							//continue;
 						}
-						else
-						{
-							//printf("[RecvCompletion] WSASend - retval : WSA_IO_PENDING, sendbytes : %d\n", sendbytes);
-						}
 
-					}
-					else
-					{
-						ProfileEndS("WSASend");
 					}
 
 				}
@@ -294,7 +263,6 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 					wsabuf[1].buf = ptr->SendQ.GetStartBufferPtr();
 					wsabuf[1].len = ptr->SendQ.GetUsedSize() - wsabuf[0].len;
 					ZeroMemory(&ptr->sendio.overlapped, sizeof(ptr->sendio.overlapped));
-					ProfileBegin("WSASend");
 					retval = WSASend(ptr->sock, wsabuf, 2, &sendbytes, sendflags, &ptr->sendio.overlapped, NULL);
 					if (retval == SOCKET_ERROR)
 					{
@@ -303,15 +271,8 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 							err_display((char*)"WSASend()");
 							//continue;
 						}
-						else
-						{
-							//printf("[RecvCompletion] WSASend - retval : WSA_IO_PENDING, sendbytes : %d\n", sendbytes);
-						}
 					}
-					else
-					{
-						ProfileEndS("WSASend");
-					}
+
 				}
 
 			}
@@ -325,8 +286,6 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 				wsabuf.len = ptr->RecvQ.DirectEnqueueSize();
 				DWORD recvbytes, flags = 0;
 				ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
-				InterlockedIncrement(&recvcount);
-				ProfileBegin("WSARecv");
 				retval = WSARecv(ptr->sock, &wsabuf, 1, &recvbytes, &flags, &ptr->recvio.overlapped, NULL);
 				if (retval == SOCKET_ERROR)
 				{
@@ -334,17 +293,6 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 					{
 						err_display((char*)"WSARecv()");
 					}
-					else
-					{
-						//printf("[RecvCompletion] WSARecv - retval : WSA_IO_PENDING, recvbytes : %d\n", recvbytes);
-						InterlockedExchange(&pending, 1);
-					}
-				}
-				else
-				{
-					//printf("[RecvCompletion] WSARecv - retval : %d, recvbytes : %d\n", retval,recvbytes);
-					ProfileEndS("WSARecv");
-					InterlockedExchange(&pending, 0);
 				}
 			}
 			else
@@ -357,8 +305,6 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 				wsabuf[1].buf = ptr->RecvQ.GetStartBufferPtr();
 				wsabuf[1].len = ptr->RecvQ.GetFreeSize() - wsabuf[0].len;
 				ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
-				InterlockedIncrement(&recvcount);
-				ProfileBegin("WSARecv");
 				retval = WSARecv(ptr->sock, wsabuf, 2, &recvbytes, &recvflags, &ptr->recvio.overlapped, NULL);
 				if (retval == SOCKET_ERROR)
 				{
@@ -367,16 +313,6 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 						err_display((char*)"WSARecv()");
 
 					}
-					else
-					{
-						//printf("[RecvCompletion] WSARecv - retval : WSA_IO_PENDING, recvbytes : %d\n", recvbytes);
-						InterlockedExchange(&pending, 1);
-					}
-				}
-				else
-				{
-					ProfileEndS("WSARecv");
-					InterlockedExchange(&pending, 0);
 				}
 			}
 
@@ -384,10 +320,10 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 
 		if (myoverlapped->type == 1)
 		{
-			//ProfileEndA("WSASend");
+
 			ptr->SendQ.MoveFront(cbTransferred);
-			InterlockedExchange(&check, 0);
-			if (ptr->SendQ.GetUsedSize() > 0 && InterlockedExchange(&check, 1) == 0)
+			InterlockedExchange(&ptr->sendflag, 0);
+			if (ptr->SendQ.GetUsedSize() > 0 && InterlockedExchange(&ptr->sendflag, 1) == 0)
 			{
 				if (ptr->SendQ.GetUsedSize() == ptr->SendQ.DirectDequeueSize())
 				{
@@ -397,7 +333,6 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 					wsabuf.buf = ptr->SendQ.GetFrontBufferPtr();
 					wsabuf.len = ptr->SendQ.DirectDequeueSize();
 					ZeroMemory(&ptr->sendio.overlapped, sizeof(ptr->sendio.overlapped));
-					ProfileBegin("WSASend");
 					retval = WSASend(ptr->sock, &wsabuf, 1, &sendbytes, sendflags, &ptr->sendio.overlapped, NULL);
 					if (retval == SOCKET_ERROR)
 					{
@@ -405,14 +340,7 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 						{
 							err_display((char*)"WSASend()");
 						}
-						else
-						{
-							//printf("[SendCompletion] WSASend - retval : WSA_IO_PENDING, sendbytes : %d\n", sendbytes);
-						}
-					}
-					else
-					{
-						ProfileEndS("WSASend");
+
 					}
 
 				}
@@ -426,7 +354,6 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 					wsabuf[1].buf = ptr->SendQ.GetStartBufferPtr();
 					wsabuf[1].len = ptr->SendQ.GetUsedSize() - wsabuf[0].len;
 					ZeroMemory(&ptr->sendio.overlapped, sizeof(ptr->sendio.overlapped));
-					ProfileBegin("WSASend");
 					retval = WSASend(ptr->sock, wsabuf, 2, &sendbytes, sendflags, &ptr->sendio.overlapped, NULL);
 					if (retval == SOCKET_ERROR)
 					{
@@ -435,15 +362,7 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 							err_display((char*)"WSASend()");
 							
 						}
-						else
-						{
-							//printf("[SendCompletion] WSASend - retval : WSA_IO_PENDING, sendbytes : %d\n", sendbytes);
-						}
 
-					}
-					else
-					{
-						ProfileEndS("WSASend");
 					}
 				}
 
@@ -462,7 +381,7 @@ DWORD WINAPI MonitorThread(LPVOID arg)
 	while (1)
 	{
 		if (GetAsyncKeyState(0x51) & 0x01)
-		{
+		{ 
 			ProfileDataOutText();
 		}
 		if (GetAsyncKeyState(0x57) & 0x01)
