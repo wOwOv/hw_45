@@ -12,7 +12,7 @@ struct stProfile{
 	__int64 Call;				// 누적 호출 횟수.
 	__int64 CallA;			//비동기 call 횟수
 	__int64 CallS;			//동기 call 횟수
-
+	long flag; //1이면 profilebegin, 0이면 안 한 것
 };
 
 stProfile PArr[20];
@@ -26,8 +26,14 @@ void ProfileBegin(const char* szName) {
 		if (PArr[idx].Flag) {
 			if (PArr[idx].Call == 0) {
 				throw 1;
+				//DebugBreak();
 			}
 			if (strcmp(PArr[idx].Name, szName) == 0) {
+				int check = InterlockedExchange(&PArr[idx].flag, 1);
+				if (check != 0)
+				{
+					DebugBreak();
+				}
 				QueryPerformanceCounter(&PArr[idx].StartTime);
 				break;
 			}
@@ -40,6 +46,11 @@ void ProfileBegin(const char* szName) {
 				PArr[idx].Flag = true;
 				strcpy_s(PArr[idx].Name,sizeof(PArr[idx].Name), szName);
 				QueryPerformanceCounter(&PArr[idx].StartTime);
+				int check = InterlockedExchange(&PArr[idx].flag, 1);
+				if (check != 0)
+				{
+					DebugBreak();
+				}
 				break;
 			}
 		}
@@ -58,15 +69,23 @@ void ProfileEnd(const char* szName) {
 		}
 	}
 	if (idx == 20) {
-		throw 1;
+		//throw 1;
+		DebugBreak();
 	}
 	//총시간에 걸린 시간 더하기
 	LARGE_INTEGER End;
 	QueryPerformanceCounter(&End);
 	LARGE_INTEGER Time;
 	Time.QuadPart= End.QuadPart - PArr[idx].StartTime.QuadPart;
+
+	int Echeck = InterlockedExchange(&PArr[idx].flag, 0);
+	if (Echeck != 1)
+	{
+		DebugBreak();
+	}
+
 	PArr[idx].TotalTime += Time.QuadPart;
-	
+
 	//최소값이면 데이터 넣기
 	if(PArr[idx].Min[0]==0){
 		PArr[idx].Min[0] = Time.QuadPart;
@@ -113,55 +132,13 @@ void ProfileEndA(const char* szName) {
 	QueryPerformanceCounter(&End);
 	LARGE_INTEGER Time;
 	Time.QuadPart = End.QuadPart - PArr[idx].StartTime.QuadPart;
-	//PArr[idx].TotalTime += Time.QuadPart;
 
-	////최소값이면 데이터 넣기
-	//if (PArr[idx].Min[0] == 0) {
-	//	PArr[idx].Min[0] = Time.QuadPart;
-	//}
-	//else if (PArr[idx].Min[1] == 0) {
-	//	PArr[idx].Min[1] = Time.QuadPart;
-	//}
-	//else {
-	//	if (PArr[idx].Min[0] > Time.QuadPart) {
-	//		PArr[idx].Min[0] = Time.QuadPart;
-	//	}
-	//	else if (PArr[idx].Min[1] > Time.QuadPart) {
-	//		PArr[idx].Min[1] = Time.QuadPart;
-	//	}
-	//}
-	////최대값이면 데이터 넣기
-	//if (PArr[idx].Max[0] < Time.QuadPart) {
-	//	PArr[idx].Max[0] = Time.QuadPart;
-	//}
-	//else if (PArr[idx].Max[1] < Time.QuadPart) {
-	//	PArr[idx].Max[1] = Time.QuadPart;
-	//}
-
-	PArr[idx].Call++;
-	PArr[idx].CallA++;
-
-
-}
-
-//Profiling 끝내기//동기
-void ProfileEndS(const char* szName) {
-	int idx = 0;
-	for (; idx < 20; idx++) {
-		if (PArr[idx].Flag) {
-			if (strcmp(PArr[idx].Name, szName) == 0) {
-				break;
-			}
-		}
+	int Echeck = InterlockedExchange(&PArr[idx].flag, 0);
+	if (Echeck != 1)
+	{
+		DebugBreak();
 	}
-	if (idx == 20) {
-		throw 1;
-	}
-	//총시간에 걸린 시간 더하기
-	LARGE_INTEGER End;
-	QueryPerformanceCounter(&End);
-	LARGE_INTEGER Time;
-	Time.QuadPart = End.QuadPart - PArr[idx].StartTime.QuadPart;
+
 	PArr[idx].TotalTime += Time.QuadPart;
 
 	//최소값이면 데이터 넣기
@@ -186,6 +163,62 @@ void ProfileEndS(const char* szName) {
 	else if (PArr[idx].Max[1] < Time.QuadPart) {
 		PArr[idx].Max[1] = Time.QuadPart;
 	}
+
+	PArr[idx].Call++;;
+	PArr[idx].CallA++;
+
+
+}
+
+//Profiling 끝내기//동기
+void ProfileEndS(const char* szName) {
+	int idx = 0;
+	for (; idx < 20; idx++) {
+		if (PArr[idx].Flag) {
+			if (strcmp(PArr[idx].Name, szName) == 0) {
+				break;
+			}
+		}
+	}
+	if (idx == 20) {
+		throw 1;
+	}
+	//총시간에 걸린 시간 더하기
+	LARGE_INTEGER End;
+	QueryPerformanceCounter(&End);
+	LARGE_INTEGER Time;
+	Time.QuadPart = End.QuadPart - PArr[idx].StartTime.QuadPart;
+
+	int Echeck = InterlockedExchange(&PArr[idx].flag, 0);
+	if (Echeck != 1)
+	{
+		DebugBreak();
+	}
+
+	//PArr[idx].TotalTime += Time.QuadPart;
+
+	////최소값이면 데이터 넣기
+	//if (PArr[idx].Min[0] == 0) {
+	//	PArr[idx].Min[0] = Time.QuadPart;
+	//}
+	//else if (PArr[idx].Min[1] == 0) {
+	//	PArr[idx].Min[1] = Time.QuadPart;
+	//}
+	//else {
+	//	if (PArr[idx].Min[0] > Time.QuadPart) {
+	//		PArr[idx].Min[0] = Time.QuadPart;
+	//	}
+	//	else if (PArr[idx].Min[1] > Time.QuadPart) {
+	//		PArr[idx].Min[1] = Time.QuadPart;
+	//	}
+	//}
+	////최대값이면 데이터 넣기
+	//if (PArr[idx].Max[0] < Time.QuadPart) {
+	//	PArr[idx].Max[0] = Time.QuadPart;
+	//}
+	//else if (PArr[idx].Max[1] < Time.QuadPart) {
+	//	PArr[idx].Max[1] = Time.QuadPart;
+	//}
 
 	PArr[idx].Call++;
 	PArr[idx].CallS++;

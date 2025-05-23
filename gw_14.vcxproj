@@ -104,6 +104,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -132,10 +133,13 @@
     <ClCompile Include="gw_14.cpp" />
     <ClCompile Include="Profiler.cpp" />
     <ClCompile Include="RingBuffer.cpp" />
+    <ClCompile Include="SerialBuffer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Profiler.h" />
     <ClInclude Include="RingBuffer.h" />
+    <ClInclude Include="SerialBuffer.h" />
+    <ClInclude Include="Struct.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
