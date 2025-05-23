@@ -39,9 +39,12 @@ struct SESSION
 	__int64 sessionkey;
 
 	long sendflag = 0;
+
 	long remove = 0;
-	long sendcompletion = 0;
-	long recvcompletion = 0;
+	long sendcompletion = 0;// send할 때나 send완료통지에 에러
+	long recvcompletion = 0;//recv할 때나 recv완료통지에 에러
+	long sendend = 0;
+	long recvend = 0;
 };
 
 
@@ -51,17 +54,12 @@ unsigned __stdcall WorkerThread(LPVOID arg);
 //accept 스레드 함수
 unsigned __stdcall AcceptThread(LPVOID arg);
 
-//SessionMap, SessionRemoved 요소 삭제 스레드 함수
-unsigned __stdcall DeleteThread(LPVOID arg);
 
 //세션맵
 unordered_map<__int64, SESSION*> SessionMap;
-unordered_map<__int64, bool> SessionRemoved;
 
 //세션맵 락
 SRWLOCK sessionLock;
-//SessionRemoved 락
-SRWLOCK flagLock;
 
 //listen socket
 SOCKET ListenSock;
@@ -145,7 +143,7 @@ int main(int argc, char* argv[])
 	if (sbretval == SOCKET_ERROR)
 	{
 		sbretval = WSAGetLastError();
-		printf("nonblokcin error: %d\n", sbretval);
+		printf("nonblocking error: %d\n", sbretval);
 		return -1;
 	}
 
@@ -181,7 +179,6 @@ int main(int argc, char* argv[])
 	}
 
 	hThread[8] = (HANDLE)_beginthreadex(NULL, 0, &AcceptThread, NULL, 0, NULL);
-	hThread[9] = (HANDLE)_beginthreadex(NULL, 0, &DeleteThread, NULL, 0, NULL);
 
 	WaitForMultipleObjects(9, hThread, TRUE, INFINITE);
 	printf("All thread ended!\n");
@@ -239,209 +236,233 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 					WSAGetOverlappedResult(ptr->sock, &myoverlapped->overlapped, &temp1, FALSE, &temp2);
 					printf("GetQueuedCompletionStatus error : %d\n", gqcsretval);
 				}
-				InterlockedExchange(&ptr->remove, 1);
-			}
-
-			//recvio overlapped임
-			if (myoverlapped->type == 0)
-			{
-
-				if (ptr->remove != 0)
+				if (myoverlapped->type == 0)
 				{
 					InterlockedExchange(&ptr->recvcompletion, 1);
+					if (InterlockedExchange(&ptr->sendflag,1) == 0)
+					{
+						InterlockedExchange(&ptr->sendcompletion, 1);
+
+						AcquireSRWLockExclusive(&sessionLock);
+						closesocket(ptr->sock);
+						SessionMap.erase(id);
+						delete ptr;
+						ReleaseSRWLockExclusive(&sessionLock);
+					}
+
+					
+
+					break;
 				}
-				//printf("WSARecv completion\n");
-				ptr->RecvQ.MoveRear(cbTransferred);
-				while (1)
+
+				if (myoverlapped->type == 1)
 				{
-					//recv 후 처리
-					//header만큼 들어왔는지 확인
-					if (ptr->RecvQ.GetUsedSize() < sizeof(HEADER))
-					{
-						break;
-					}
-					HEADER header;
-					int pkret = ptr->RecvQ.Peek((char*)&header, sizeof(HEADER));
-					if (pkret != sizeof(HEADER))
-					{
-						DebugBreak();
-					}
-
-					//헤더+데이터 만큼 들어있는지 확인
-					if (ptr->RecvQ.GetUsedSize() < header.size + sizeof(HEADER))
-					{
-						break;
-					}
-					msgbuf.Clear();
-					int deqret = ptr->RecvQ.Dequeue(msgbuf.GetBufferPtr(), header.size + sizeof(HEADER));
-					if (deqret != header.size + sizeof(HEADER))
-					{
-						DebugBreak();
-					}
-					int movret = msgbuf.MoveWritePos(deqret);
-					if (movret != deqret)
-					{
-						DebugBreak();
-					}
-
-					//~~~뭔가의 처리~~~
-					//받은 것 SendQ로 옮기기
-					int size = msgbuf.GetDataSize();
-					int enqret = ptr->SendQ.Enqueue(msgbuf.GetBufferPtr(), size);
-					if (enqret != size)
-					{
-						DebugBreak();
-					}
-
+					InterlockedExchange(&ptr->sendcompletion, 1);
 				}
 
 
-				//WSASend걸기
 
-				if (ptr->SendQ.GetUsedSize() > 0 && InterlockedExchange(&ptr->sendflag, 1) == 0)
+			}
+			else
+			{
+				//recvio overlapped임
+				if (myoverlapped->type == 0)
 				{
 
-					WSABUF wsabuf;
-					DWORD sendbytes;
-					DWORD sendflags = 0;
-					wsabuf.buf = ptr->SendQ.GetFrontBufferPtr();
-					wsabuf.len = ptr->SendQ.DirectDequeueSize();//directsize;
-					ZeroMemory(&ptr->sendio.overlapped, sizeof(ptr->sendio.overlapped));
-					sdretval = WSASend(ptr->sock, &wsabuf, 1, &sendbytes, sendflags, &ptr->sendio.overlapped, NULL);
-					if (sdretval == SOCKET_ERROR)
+					//printf("WSARecv completion\n");
+					ptr->RecvQ.MoveRear(cbTransferred);
+					while (1)
 					{
-						sdretval = WSAGetLastError();
-						if (sdretval != WSA_IO_PENDING)
+						//recv 후 처리
+						//header만큼 들어왔는지 확인
+						if (ptr->RecvQ.GetUsedSize() < sizeof(HEADER))
 						{
-							printf("WSASend error : %d\n", sdretval);
+							break;
+						}
+						HEADER header;
+						int pkret = ptr->RecvQ.Peek((char*)&header, sizeof(HEADER));
+						if (pkret != sizeof(HEADER))
+						{
+							DebugBreak();
+						}
 
-							InterlockedExchange(&ptr->remove, 1);
+						//헤더+데이터 만큼 들어있는지 확인
+						if (ptr->RecvQ.GetUsedSize() < header.size + sizeof(HEADER))
+						{
+							break;
+						}
+						msgbuf.Clear();
+						int deqret = ptr->RecvQ.Dequeue(msgbuf.GetBufferPtr(), header.size + sizeof(HEADER));
+						if (deqret != header.size + sizeof(HEADER))
+						{
+							DebugBreak();
+						}
+						int movret = msgbuf.MoveWritePos(deqret);
+						if (movret != deqret)
+						{
+							DebugBreak();
+						}
+
+						//~~~뭔가의 처리~~~
+						//받은 것 SendQ로 옮기기
+						int size = msgbuf.GetDataSize();
+						int enqret = ptr->SendQ.Enqueue(msgbuf.GetBufferPtr(), size);
+						if (enqret != size)
+						{
+							DebugBreak();
+						}
+
+					}
+
+
+					//WSASend걸기
+
+					if (ptr->SendQ.GetUsedSize() > 0 && InterlockedExchange(&ptr->sendflag, 1) == 0)
+					{
+						if (gqcsretval == 0 || cbTransferred == 0)
+						{
 							InterlockedExchange(&ptr->sendcompletion, 1);
+						}
+						WSABUF wsabuf;
+						DWORD sendbytes;
+						DWORD sendflags = 0;
+						wsabuf.buf = ptr->SendQ.GetFrontBufferPtr();
+						wsabuf.len = ptr->SendQ.DirectDequeueSize();//directsize;
+						ZeroMemory(&ptr->sendio.overlapped, sizeof(ptr->sendio.overlapped));
+						sdretval = WSASend(ptr->sock, &wsabuf, 1, &sendbytes, sendflags, &ptr->sendio.overlapped, NULL);
+						if (sdretval == SOCKET_ERROR)
+						{
+							sdretval = WSAGetLastError();
+							if (sdretval != WSA_IO_PENDING)
+							{
+								printf("WSASend error : %d\n", sdretval);
+
+								InterlockedExchange(&ptr->sendcompletion, 1);
+								InterlockedExchange(&ptr->recvcompletion, 1);
+								AcquireSRWLockExclusive(&sessionLock);
+								closesocket(ptr->sock);
+								SessionMap.erase(id);
+								delete ptr;
+								ReleaseSRWLockExclusive(&sessionLock);
+								
+								break;
+							}
 						}
 
 					}
 
 					//printf("Recv completion WSASend SessionID: %d\n", ptr->sessionkey);
-				}
+
 
 				//WSARecv 걸기
 				//비동기 입출력 시작
-				if (ptr->RecvQ.GetUsedSize() == ptr->RecvQ.DirectEnqueueSize())
-				{
-					WSABUF wsabuf;
-					wsabuf.buf = ptr->RecvQ.GetRearBufferPtr();
-					wsabuf.len = ptr->RecvQ.DirectEnqueueSize();
-					DWORD recvbytes, flags = 0;
-					ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
-					rvretval = WSARecv(ptr->sock, &wsabuf, 1, &recvbytes, &flags, &ptr->recvio.overlapped, NULL);
-					if (rvretval == SOCKET_ERROR)
+					if (ptr->RecvQ.GetUsedSize() == ptr->RecvQ.DirectEnqueueSize())
 					{
-						rvretval = WSAGetLastError();
-						if (rvretval != ERROR_IO_PENDING)
+						WSABUF wsabuf;
+						wsabuf.buf = ptr->RecvQ.GetRearBufferPtr();
+						wsabuf.len = ptr->RecvQ.DirectEnqueueSize();
+						DWORD recvbytes, flags = 0;
+						ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
+						rvretval = WSARecv(ptr->sock, &wsabuf, 1, &recvbytes, &flags, &ptr->recvio.overlapped, NULL);
+						if (rvretval == SOCKET_ERROR)
 						{
-							printf("WSARecv error : %d\n", rvretval);
+							rvretval = WSAGetLastError();
+							if (rvretval != ERROR_IO_PENDING)
+							{
+								printf("WSARecv error : %d\n", rvretval);
 
-							InterlockedExchange(&ptr->remove, 1);
-							InterlockedExchange(&ptr->recvcompletion, 1);
+								InterlockedExchange(&ptr->recvcompletion, 1);
+							}
 						}
 					}
-				}
-				else
-				{
-					WSABUF wsabuf[2];
-					DWORD recvbytes = 0;
-					DWORD recvflags = 0;
-					wsabuf[0].buf = ptr->RecvQ.GetRearBufferPtr();
-					wsabuf[0].len = ptr->RecvQ.DirectEnqueueSize();
-					wsabuf[1].buf = ptr->RecvQ.GetStartBufferPtr();
-					wsabuf[1].len = ptr->RecvQ.GetFreeSize() - wsabuf[0].len;
-					ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
-					rvretval = WSARecv(ptr->sock, wsabuf, 2, &recvbytes, &recvflags, &ptr->recvio.overlapped, NULL);
-					if (rvretval == SOCKET_ERROR)
+					else
 					{
-						rvretval = WSAGetLastError();
-						if (rvretval != ERROR_IO_PENDING)
+						WSABUF wsabuf[2];
+						DWORD recvbytes = 0;
+						DWORD recvflags = 0;
+						wsabuf[0].buf = ptr->RecvQ.GetRearBufferPtr();
+						wsabuf[0].len = ptr->RecvQ.DirectEnqueueSize();
+						wsabuf[1].buf = ptr->RecvQ.GetStartBufferPtr();
+						wsabuf[1].len = ptr->RecvQ.GetFreeSize() - wsabuf[0].len;
+						ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
+						rvretval = WSARecv(ptr->sock, wsabuf, 2, &recvbytes, &recvflags, &ptr->recvio.overlapped, NULL);
+						if (rvretval == SOCKET_ERROR)
 						{
-							printf("WSARecv error : %d\n", rvretval);
+							rvretval = WSAGetLastError();
+							if (rvretval != ERROR_IO_PENDING)
+							{
+								printf("WSARecv error : %d\n", rvretval);
 
-							InterlockedExchange(&ptr->remove, 1);
-							InterlockedExchange(&ptr->recvcompletion, 1);
+								InterlockedExchange(&ptr->recvcompletion, 1);
+							}
 						}
 					}
-				}
-				//printf("Recv completion WSARecv SessionID: %d\n", ptr->sessionkey);
+					//printf("Recv completion WSARecv SessionID: %d\n", ptr->sessionkey);
 
+
+				}
+				if (myoverlapped->type == 1)
+				{
+					//printf("WSASend completion\n");
+					ptr->SendQ.MoveFront(cbTransferred);
+					InterlockedExchange(&ptr->sendflag, 0);
+
+					if (ptr->SendQ.GetUsedSize() > 0 && InterlockedExchange(&ptr->sendflag, 1) == 0)
+					{
+
+						WSABUF wsabuf;
+						DWORD sendbytes;
+						DWORD sendflags = 0;
+						wsabuf.buf = ptr->SendQ.GetFrontBufferPtr();
+						wsabuf.len = ptr->SendQ.DirectDequeueSize();//directsize;
+						ZeroMemory(&ptr->sendio.overlapped, sizeof(ptr->sendio.overlapped));
+						sdretval = WSASend(ptr->sock, &wsabuf, 1, &sendbytes, sendflags, &ptr->sendio.overlapped, NULL);
+						if (sdretval == SOCKET_ERROR)
+						{
+							sdretval = WSAGetLastError();
+							if (sdretval != WSA_IO_PENDING)
+							{
+								printf("WSASend error : %d\n", sdretval);
+
+								InterlockedExchange(&ptr->sendcompletion, 1);
+							}
+
+						}
+
+						//printf("Send completion WSASend SessionID: %d\n", ptr->sessionkey);
+					}
+				}
 			}
 
-			if (myoverlapped->type == 1)
+
+			AcquireSRWLockExclusive(&sessionLock);
+			if (ptr->recvcompletion == 1 && ptr->sendcompletion == 1)
 			{
-				if (ptr->remove != 0)
+				if (myoverlapped->type == 0)
 				{
-					InterlockedExchange(&ptr->sendcompletion, 1);
+					InterlockedExchange(&ptr->recvend, 1);
+				}
+				if (myoverlapped->type == 1)
+				{
+					InterlockedExchange(&ptr->sendend, 1);
 				}
 
-				//printf("WSASend completion\n");
-				ptr->SendQ.MoveFront(cbTransferred);
-				InterlockedExchange(&ptr->sendflag, 0);
-
-				if (ptr->SendQ.GetUsedSize() > 0 && InterlockedExchange(&ptr->sendflag, 1) == 0)
+				if (InterlockedExchange(&ptr->remove, 1) != 0)
 				{
-
-					WSABUF wsabuf;
-					DWORD sendbytes;
-					DWORD sendflags = 0;
-					wsabuf.buf = ptr->SendQ.GetFrontBufferPtr();
-					wsabuf.len = ptr->SendQ.DirectDequeueSize();//directsize;
-					ZeroMemory(&ptr->sendio.overlapped, sizeof(ptr->sendio.overlapped));
-					sdretval = WSASend(ptr->sock, &wsabuf, 1, &sendbytes, sendflags, &ptr->sendio.overlapped, NULL);
-					if (sdretval == SOCKET_ERROR)
-					{
-						sdretval = WSAGetLastError();
-						if (sdretval != WSA_IO_PENDING)
-						{
-							printf("WSASend error : %d\n", sdretval);
-
-							InterlockedExchange(&ptr->remove, 1);
-							InterlockedExchange(&ptr->sendcompletion, 1);
-						}
-
-					}
-
-					//printf("Send completion WSASend SessionID: %d\n", ptr->sessionkey);
+					closesocket(ptr->sock);
+					SessionMap.erase(id);
+					delete ptr;
 				}
-
 			}
-
-			//if (ptr->remove != 0)// && ptr->recvcompletion != 0 && ptr->sendcompletion)
-			//{
-			//	AcquireSRWLockExclusive(&flagLock);
-			//	bool check = SessionRemoved.find(id)->second;
-			//	if (check == 0)
-			//	{
-			//		AcquireSRWLockExclusive(&sessionLock);
-			//		SessionMap.erase(id);
-			//		ReleaseSRWLockExclusive(&sessionLock);
-			//		unordered_map<__int64, bool>::iterator it = SessionRemoved.find(id);
-			//		it->second = 1;
-
-			//	}
-			//	else
-			//	{
-			//		SessionRemoved.erase(id);
-			//	}
-
-			//	ReleaseSRWLockExclusive(&flagLock);
-			//}
+			ReleaseSRWLockExclusive(&sessionLock);
 
 		} while (0);
 
 	}
-
-
-
 	return 0;
-
 }
+
+
 
 //accept 스레드 함수
 unsigned __stdcall AcceptThread(LPVOID arg)
@@ -489,7 +510,7 @@ unsigned __stdcall AcceptThread(LPVOID arg)
 			SessionMap.insert(make_pair(ptr->sessionkey, ptr));
 			ReleaseSRWLockExclusive(&sessionLock);
 
-			printf("[TCP server] client connected : IP address=%s, Port=%d, SessionID: %d\n", inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), ptr->sessionkey);
+			//printf("[TCP server] client connected : IP address=%s, Port=%d, SessionID: %d\n", inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), ptr->sessionkey);
 
 			InterlockedIncrement((unsigned long long*) & SessionKey);
 
@@ -511,7 +532,7 @@ unsigned __stdcall AcceptThread(LPVOID arg)
 					printf("WSARecv error: %d\n", rvretval);
 
 					closesocket(ptr->sock);
-					printf("[TCP server] client ended: IP address=%s, Port=%d, SessionID: %d\n", inet_ntoa(ptr->ip), ntohs(ptr->port), ptr->sessionkey);
+					//printf("[TCP server] client ended: IP address=%s, Port=%d, SessionID: %d\n", inet_ntoa(ptr->ip), ntohs(ptr->port), ptr->sessionkey);
 					AcquireSRWLockExclusive(&sessionLock);
 					SessionMap.erase(ptr->sessionkey);
 					ReleaseSRWLockExclusive(&sessionLock);
@@ -524,41 +545,3 @@ unsigned __stdcall AcceptThread(LPVOID arg)
 	}
 }
 
-//SessionMap, SessionRemoved 요소 삭제 스레드 함수
-unsigned __stdcall DeleteThread(LPVOID arg)
-{
-	while (1)
-	{
-		//AcquireSRWLockExclusive(&flagLock);
-		AcquireSRWLockShared(&sessionLock);
-		
-		unordered_map<__int64, SESSION*>::iterator it = SessionMap.begin();
-		for (; it != SessionMap.end();)
-		{
-			if (it->second->remove != 0)
-			{
-				SessionRemoved.insert(make_pair(it->second->sessionkey, 1));
-			}
-
-		}
-		
-		ReleaseSRWLockShared(&sessionLock);
-		
-		Sleep(1000);
-
-		unordered_map<__int64, bool>::iterator rit = SessionRemoved.begin();
-		for (; rit != SessionRemoved.end();)
-		{
-				AcquireSRWLockExclusive(&sessionLock);
-				unordered_map<__int64, SESSION*>::iterator tgt = SessionMap.find(rit->first);
-				SessionMap.erase(tgt);
-				ReleaseSRWLockExclusive(&sessionLock);
-
-				rit = SessionRemoved.erase(rit);
-		
-		}
-
-		
-	}
-	return 0;
-}
