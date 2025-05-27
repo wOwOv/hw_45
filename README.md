@@ -43,3 +43,6 @@ hw_45_8
 hw_45_9
 ㄴInitializeSRWLock을 이제껏 안하고 있었음...
  ㄴ락 초기화 해주니 일단 댕글링이나 중복 삭제 일어나진 않음
+ㄴWait Echo Count랑 Echo Not Recv 남아있음...
+ ㄴ0번 스레드 recv완료통지에서 send 걸고 recv걸기 전에 ready로, 1번 스레드 send완료통지에서 send할 것 없는데 sendflag바꾸기 전에 ready로, 0번 스레드 다시 running이고 recv 걸었고 1번 스레드도 send플래그 바꿨음=>이제 클라는 끊으려고 에코 다 오길 기다리는데 서버에서 send가 안 걸려서 Wait Echo Count 남음=>directsize넣어서 하고 있어서 그런건가..?
+
