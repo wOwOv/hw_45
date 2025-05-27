@@ -112,8 +112,8 @@ int main(int argc, char* argv[])
 	GetSystemInfo(&si);
 
 	//(CPU 개수 * 2)개의 작업자 스레드 생성
-	HANDLE hThread[10];
-	for (int i = 0; i < 2; i++)//(int)si.dwNumberOfProcessors * 2; i++)
+	HANDLE hThread[9];
+	for (int i = 0; i < (int)si.dwNumberOfProcessors * 2; i++)
 	{
 		hThread[i] = (HANDLE)_beginthreadex(NULL, 0, &WorkerThread, hcp, 0, NULL);
 		if (hThread == NULL)
@@ -188,7 +188,9 @@ int main(int argc, char* argv[])
 	}
 
 	hThread[8] = (HANDLE)_beginthreadex(NULL, 0, &AcceptThread, NULL, 0, NULL);
-	Sleep(INFINITE);
+	InitializeSRWLock(&sessionLock);
+
+	//Sleep(INFINITE);
 	WaitForMultipleObjects(9, hThread, TRUE, INFINITE);
 	printf("All thread ended!\n");
 
@@ -251,7 +253,7 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 					AcquireSRWLockExclusive(&ptr->lock);
 					InterlockedExchange(&ptr->recverror, 1);
 
-					if (ptr->recverror == 1 &&ptr->sendflag==0)
+					if (ptr->recverror == 1 && ptr->sendflag == 0)
 					{
 						ReleaseSRWLockExclusive(&ptr->lock);
 						Delete(ptr);
@@ -268,12 +270,9 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 					InterlockedExchange(&ptr->sendflag, 0);
 					if (ptr->recverror == 1 && ptr->sendflag == 0)
 					{
-						if (InterlockedExchange(&ptr->remove, 1) != 0)
-						{
-							ReleaseSRWLockExclusive(&ptr->lock);
-							Delete(ptr);
-							break;
-						}
+						ReleaseSRWLockExclusive(&ptr->lock);
+						Delete(ptr);
+						break;
 					}
 
 					ReleaseSRWLockExclusive(&ptr->lock);
@@ -350,15 +349,17 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 							if (sdretval != WSA_IO_PENDING)
 							{
 								printf("WSASend error : %d\n", sdretval);
-
+								AcquireSRWLockExclusive(&ptr->lock);
 								InterlockedExchange(&ptr->sendflag, 0);
 								InterlockedExchange(&ptr->recverror, 1);
 
 								if (ptr->recverror == 1 && ptr->sendflag == 0)
 								{
-										Delete(ptr);
-										break;
+									ReleaseSRWLockExclusive(&ptr->lock);
+									Delete(ptr);
+									break;
 								}
+								ReleaseSRWLockExclusive(&ptr->lock);
 								break;
 							}
 						}
@@ -378,7 +379,7 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 						wsabuf.len = ptr->RecvQ.DirectEnqueueSize();
 						DWORD recvbytes, flags = 0;
 						ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
-						
+
 
 						rvretval = WSARecv(ptr->sock, &wsabuf, 1, &recvbytes, &flags, &ptr->recvio.overlapped, NULL);
 						if (rvretval == SOCKET_ERROR)
@@ -393,12 +394,9 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 
 								if (ptr->recverror == 1 && ptr->sendflag == 0)
 								{
-									if (InterlockedExchange(&ptr->remove, 1) != 0)
-									{
-										ReleaseSRWLockExclusive(&ptr->lock);
-										Delete(ptr);
-										break;
-									}
+									ReleaseSRWLockExclusive(&ptr->lock);
+									Delete(ptr);
+									break;
 								}
 								ReleaseSRWLockExclusive(&ptr->lock);
 								break;
@@ -417,7 +415,7 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 						wsabuf[1].buf = ptr->RecvQ.GetStartBufferPtr();
 						wsabuf[1].len = ptr->RecvQ.GetFreeSize() - wsabuf[0].len;
 						ZeroMemory(&ptr->recvio.overlapped, sizeof(ptr->recvio.overlapped));
-						
+
 						rvretval = WSARecv(ptr->sock, wsabuf, 2, &recvbytes, &recvflags, &ptr->recvio.overlapped, NULL);
 						if (rvretval == SOCKET_ERROR)
 						{
@@ -425,18 +423,15 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 							if (rvretval != ERROR_IO_PENDING)
 							{
 								printf("WSARecv error : %d\n", rvretval);
-								
+
 								AcquireSRWLockExclusive(&ptr->lock);
 								InterlockedExchange(&ptr->recverror, 1);
 
 								if (ptr->recverror == 1 && ptr->sendflag == 0)
 								{
-									if (InterlockedExchange(&ptr->remove, 1) != 0)
-									{
-										ReleaseSRWLockExclusive(&ptr->lock);
-										Delete(ptr);
-										break;
-									}
+									ReleaseSRWLockExclusive(&ptr->lock);
+									Delete(ptr);
+									break;
 								}
 								ReleaseSRWLockExclusive(&ptr->lock);
 								break;
@@ -474,12 +469,9 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 
 								if (ptr->recverror == 1 && ptr->sendflag == 0)
 								{
-									if (InterlockedExchange(&ptr->remove, 1) != 0)
-									{
-										ReleaseSRWLockExclusive(&ptr->lock);
-										Delete(ptr);
-										break;
-									}
+									ReleaseSRWLockExclusive(&ptr->lock);
+									Delete(ptr);
+									break;
 								}
 								ReleaseSRWLockExclusive(&ptr->lock);
 								break;
@@ -497,12 +489,9 @@ unsigned __stdcall WorkerThread(LPVOID arg)
 
 						if (ptr->recverror == 1 && ptr->sendflag == 0)
 						{
-							if (InterlockedExchange(&ptr->remove, 1) != 0)
-							{
-								ReleaseSRWLockExclusive(&ptr->lock);
-								Delete(ptr);
-								break;
-							}
+							ReleaseSRWLockExclusive(&ptr->lock);
+							Delete(ptr);
+							break;
 						}
 						ReleaseSRWLockExclusive(&ptr->lock);
 						break;
@@ -568,6 +557,7 @@ unsigned __stdcall AcceptThread(LPVOID arg)
 			ptr->ip = clientaddr.sin_addr;
 			ptr->port = clientaddr.sin_port;
 			ptr->sessionkey = SessionKey;
+			InitializeSRWLock(&ptr->lock);
 
 			AcquireSRWLockExclusive(&sessionLock);
 			SessionMap.insert(make_pair(ptr->sessionkey, ptr));
