@@ -46,3 +46,5 @@ hw_45_9
 ㄴWait Echo Count랑 Echo Not Recv 남아있음...
  ㄴ0번 스레드 recv완료통지에서 send 걸고 recv걸기 전에 ready로, 1번 스레드 send완료통지에서 send할 것 없는데 sendflag바꾸기 전에 ready로, 0번 스레드 다시 running이고 recv 걸었고 1번 스레드도 send플래그 바꿨음=>이제 클라는 끊으려고 에코 다 오길 기다리는데 서버에서 send가 안 걸려서 Wait Echo Count 남음
 
+hw_45_10
+ㄴhw_45_9에서 wait echo count남는 상황...미묘한 타이밍이 겹쳐 send할 것은 남아있는데 recv완료통지가 오지 않아 보낼 기회가 없어졌을때...그래서 아예 인큐했는지 제대로 볼 수 있도록 sendQ로 인큐할 때 락 걸고 풀기, recv완료통지에서 send하는 경우는 상관 없고 send완료통지에서 send하러가기 전에 락 걸어서 확인하고 풀기..
