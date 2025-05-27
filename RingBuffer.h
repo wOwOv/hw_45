@@ -1,7 +1,7 @@
 #ifndef __RINGBUFFER__
 #define __RINGBUFFER__
 
-#define DEF 5000000
+#define DEF 10000
 
 class RingBuffer
 {
