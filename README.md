@@ -55,3 +55,6 @@ hw_45_11
 
 hw_45_12
 ㄴ세션마다의 락을 걸고 푸는 범위를 좀 더 쪼개놓았음
+
+hw_45_13
+ㄴSendPacket, SendPost, Release함수 만들어 둠
